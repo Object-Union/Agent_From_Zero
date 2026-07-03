@@ -111,13 +111,15 @@ class Session:
         return session
 
 
+_KNOWN_ROLES = {"system", "user", "assistant", "tool"}
+
+
 def _parse_messages(body: str) -> list[dict]:
     """Parse ## role sections from markdown body into message dicts.
 
-    Supports:
-        ## assistant                → {"role": "assistant", "content": "..."}
-        ## tool:call_abc            → {"role": "tool", "tool_call_id": "call_abc", "content": "..."}
-        [tool_calls] ... line       → tool_calls field on the preceding assistant message
+    Only headings matching known roles (system/user/assistant/tool) or tool:ID
+    are treated as section boundaries. Unknown headings like ## Important remain
+    as content in their parent section.
     """
     messages = []
     lines = body.split("\n")
@@ -139,27 +141,33 @@ def _parse_messages(body: str) -> list[dict]:
             messages.append(msg)
 
     for line in lines:
+        # Only treat a ## line as a section boundary if it matches a known role
+        is_heading = False
         if line.startswith("## ") and len(line) > 3:
-            _flush()
             heading = line[3:].strip()
-            current_content = []
-            current_tool_call_id = None
-            pending_tool_calls = None
-
-            # Check for tool:<call_id> format
             if heading.startswith("tool:"):
+                is_heading = True
+                _flush()
                 current_role = "tool"
                 current_tool_call_id = heading[5:]
-            else:
+                current_content = []
+                pending_tool_calls = None
+            elif heading in _KNOWN_ROLES:
+                is_heading = True
+                _flush()
                 current_role = heading
+                current_tool_call_id = None
+                current_content = []
+                pending_tool_calls = None
 
-        elif line.startswith("[tool_calls] ") and current_role == "assistant":
-            try:
-                pending_tool_calls = json.loads(line[len("[tool_calls] "):])
-            except json.JSONDecodeError:
-                pass  # Ignore malformed data
-        elif current_role is not None:
-            current_content.append(line)
+        if not is_heading:
+            if line.startswith("[tool_calls] ") and current_role == "assistant":
+                try:
+                    pending_tool_calls = json.loads(line[len("[tool_calls] "):])
+                except json.JSONDecodeError:
+                    pass  # Ignore malformed data
+            elif current_role is not None:
+                current_content.append(line)
 
     _flush()
     return messages

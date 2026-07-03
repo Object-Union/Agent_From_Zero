@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"D:/Environment/Anaconda3/envs/agent_study/python.exe\" -m pytest tests/test_security.py -v)",
+      "Bash(\"D:/Environment/Anaconda3/envs/agent_study/python.exe\" -m pytest tests/ -v --tb=line)",
+      "Bash(\"D:/Environment/Anaconda3/envs/agent_study/python.exe\" -m pytest tests/test_clustering.py -v)",
+      "Bash(D:/Environment/Anaconda3/envs/agent_study/python.exe -c ' *)"
+    ]
+  }
+}

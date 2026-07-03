@@ -4,7 +4,7 @@ import json
 import sys
 import time
 
-from agent_from_zero.context import build_context
+from agent_from_zero.context import build_context, check_overflow, context_size, split_for_compression, apply_summary
 from agent_from_zero.llm.base import LLMError
 from agent_from_zero.observability import TraceRecord, emit_trace, append_trace_to_file
 from agent_from_zero.tool_registry import ToolRegistry
@@ -85,6 +85,7 @@ class Orchestrator:
                 )
                 return error_msg
 
+            self._auto_compact()
             messages = build_context(list(self._history), max_size=self._max_size)
             try:
                 response = self._adapter.chat(messages, tools=tools)
@@ -127,6 +128,7 @@ class Orchestrator:
                 yield ("done", None)
                 return
 
+            self._auto_compact()
             messages = build_context(list(self._history), max_size=self._max_size)
 
             try:
@@ -139,9 +141,11 @@ class Orchestrator:
             # Collect tool calls and accumulate content
             tool_calls_accumulated = []
             content_accumulated = ""
+            thinking_accumulated = ""
 
             for event_type, data in stream:
                 if event_type == "thinking":
+                    thinking_accumulated += data
                     yield ("thinking", data)
                 elif event_type == "content":
                     content_accumulated += data
@@ -157,6 +161,7 @@ class Orchestrator:
                 response = LLMResponse(
                     text=content_accumulated or None,
                     tool_calls=tool_calls_accumulated,
+                    thinking=thinking_accumulated or None,
                 )
                 error_msg, tool_call_count = self._execute_tools(response, tool_call_count)
                 if error_msg is not None:
@@ -178,6 +183,11 @@ class Orchestrator:
         """
         assistant_content = response.text or ""
         assistant_msg: dict = {"role": "assistant", "content": assistant_content}
+
+        # Per DeepSeek docs: with tool_calls, MUST preserve reasoning_content
+        if response.thinking:
+            assistant_msg["reasoning_content"] = response.thinking
+
         assistant_msg["tool_calls"] = [
             {
                 "id": tc["id"],
@@ -238,13 +248,103 @@ class Orchestrator:
 
         return (None, tool_call_count)
 
+    def _auto_compact(self) -> None:
+        """Silently compact context if it overflows max_size."""
+        if not check_overflow(self._history, self._max_size):
+            return
+
+        result = self._do_compact(label="auto-compacted")
+        if result is None:
+            return
+
+        print(
+            f"\n  \033[90m[{result}]\033[0m\n",
+            file=sys.stderr, flush=True,
+        )
+
+    def _do_compact(self, label: str = "compressed") -> str | None:
+        """Shared compression logic: summarize oldest 50% of messages.
+
+        Returns status message on success, or None if nothing to compress.
+        """
+        to_summarize, to_keep = split_for_compression(self._history, self._max_size)
+        if not to_summarize:
+            return None
+
+        old_count = len(self._history)
+        old_size = context_size(self._history)
+
+        try:
+            summary_prompt = (
+                "Summarize the following conversation history briefly. "
+                "Keep key facts, decisions, and user context. "
+                "Respond in the same language as the conversation."
+            )
+            summary_messages = list(to_summarize)
+            summary_messages.append({"role": "user", "content": summary_prompt})
+            response = self._adapter.chat(summary_messages)
+            summary_text = response.text or "(unable to summarize)"
+        except Exception as e:
+            summary_text = f"(compression failed: {e})"
+
+        self._history = apply_summary(self._history, to_keep, summary_text)
+        new_size = context_size(self._history)
+
+        result = (
+            f"Context {label}: {old_count} messages → {len(self._history)} messages, "
+            f"{old_size:,} → {new_size:,} chars"
+        )
+        return result
+
+    def compact(self) -> str:
+        """Manually compress context at any time, regardless of max_size.
+
+        Returns a status message describing what happened.
+        """
+        if not self._history:
+            return "Nothing to compact (no history)."
+
+        result = self._do_compact(label="compressed")
+        if result is None:
+            return "Not enough messages to compress (need at least 5 non-system messages)."
+        return result
+
+    def _context_info(self) -> str:
+        """Return a one-liner with current context stats."""
+        size = context_size(self._history)
+        pct = size / self._max_size * 100 if self._max_size else 0
+        msgs = len(self._history)
+        return (
+            f"\033[90m[context: {size:,} / {self._max_size:,} chars "
+            f"({pct:.0f}%) | {msgs} messages]\033[0m"
+        )
+
+    def _print_context_info(self) -> None:
+        """Print context stats to stderr."""
+        print(self._context_info(), file=sys.stderr, flush=True)
+
     def run_repl(self) -> None:
         """Run the interactive REPL with streaming output."""
-        print("Agent ready. Type your message (Ctrl+C to exit).\n")
+        print("Agent ready. Type your message (/compact, /context, Ctrl+C to exit).\n")
         try:
             while True:
                 user_input = input("> ")
                 if not user_input.strip():
+                    continue
+
+                # Handle slash commands
+                cmd = user_input.strip().lower()
+                if cmd == "/compact":
+                    result = self.compact()
+                    self._print_context_info()
+                    print(f"\n  {result}\n")
+                    if self._session:
+                        self._session._messages = self._history
+                        self._sync_todo_to_session()
+                        self._session.save(self._sessions_dir)
+                    continue
+                elif cmd == "/context":
+                    self._print_context_info()
                     continue
 
                 # Prepare context
@@ -274,6 +374,9 @@ class Orchestrator:
                             sys.stderr.write("\033[0m")
                             sys.stderr.flush()
                         print()  # final newline
+
+                # Show context size after each turn
+                self._print_context_info()
 
                 # Save to session after each user turn
                 if self._session:

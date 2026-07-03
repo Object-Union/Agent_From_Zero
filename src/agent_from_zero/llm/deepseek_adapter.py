@@ -10,8 +10,15 @@ class DeepSeekAdapter:
 
     DEFAULT_MODEL = "deepseek-chat"
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+    DEFAULT_REASONING_EFFORT = "high"
 
-    def __init__(self, api_key: str, model: str | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str | None = None,
+        thinking: bool = True,
+        reasoning_effort: str | None = None,
+    ):
         if not api_key:
             raise LLMError(
                 "DeepSeek API key not set. "
@@ -20,17 +27,32 @@ class DeepSeekAdapter:
         self.api_key = api_key
         self.model = model or self.DEFAULT_MODEL
         self.base_url = self.DEFAULT_BASE_URL
+        self.thinking = thinking
+        self.reasoning_effort = reasoning_effort or self.DEFAULT_REASONING_EFFORT
         self._client = OpenAI(api_key=api_key, base_url=self.base_url)
+
+    def _build_kwargs(self, messages: list[dict], tools: list[dict] | None, stream: bool = False) -> dict:
+        """Build common kwargs for API calls, including thinking mode if enabled."""
+        kwargs = {"model": self.model, "messages": messages}
+        if tools:
+            kwargs["tools"] = tools
+        if stream:
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
+
+        # Enable thinking mode on deepseek-chat / deepseek-v4-pro etc.
+        if self.thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = self.reasoning_effort
+
+        return kwargs
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
         """Send messages to DeepSeek and return the LLM response.
 
-        Returns LLMResponse with either text, tool_calls, or both.
+        Returns LLMResponse with text, tool_calls, and thinking (if enabled).
         """
-        kwargs = {"model": self.model, "messages": messages}
-        if tools:
-            kwargs["tools"] = tools
-
+        kwargs = self._build_kwargs(messages, tools, stream=False)
         response = self._client.chat.completions.create(**kwargs)
         choice = response.choices[0].message
 
@@ -45,7 +67,10 @@ class DeepSeekAdapter:
                 for tc in choice.tool_calls
             ]
 
-        return LLMResponse(text=choice.content, tool_calls=tool_calls)
+        # Capture reasoning/thinking content
+        thinking = getattr(choice, "reasoning_content", None) or None
+
+        return LLMResponse(text=choice.content, tool_calls=tool_calls, thinking=thinking)
 
     def chat_stream(self, messages: list[dict], tools: list[dict] | None = None):
         """Stream the LLM response, yielding (event_type, data) tuples.
@@ -56,17 +81,10 @@ class DeepSeekAdapter:
             "tool_calls" — accumulated tool calls (data is list[dict])
             "done"       — streaming complete (data is None)
         """
-        kwargs = {"model": self.model, "messages": messages, "stream": True}
-        if tools:
-            kwargs["tools"] = tools
-        kwargs["stream_options"] = {"include_usage": True}
-
+        kwargs = self._build_kwargs(messages, tools, stream=True)
         response = self._client.chat.completions.create(**kwargs)
 
-        accumulated_content = ""
         tool_calls_acc: dict[int, dict] = {}
-        has_content = False
-        has_thinking = False
 
         for chunk in response:
             if not chunk.choices:
@@ -76,16 +94,13 @@ class DeepSeekAdapter:
             if delta is None:
                 continue
 
-            # Reasoning / thinking content (DeepSeek-specific field)
+            # Reasoning / thinking content
             reasoning = getattr(delta, "reasoning_content", None) or ""
             if reasoning:
-                has_thinking = True
                 yield ("thinking", reasoning)
 
             # Normal content
             if delta.content:
-                has_content = True
-                accumulated_content += delta.content
                 yield ("content", delta.content)
 
             # Tool calls come as deltas — accumulate them

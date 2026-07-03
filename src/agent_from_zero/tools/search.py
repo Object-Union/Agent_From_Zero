@@ -18,9 +18,7 @@ class MockSearchAdapter(SearchAdapter):
             f"Search results for '{query}':\n"
             f"  1. Mock result A about {query}\n"
             f"  2. Mock result B about {query}\n"
-            f"  3. Mock result C about {query}\n"
-            f"\n(These are mock results. The search tool uses a replaceable adapter "
-            f"— swap MockSearchAdapter for a real implementation later.)"
+            f"  3. Mock result C about {query}"
         )
 
 

@@ -80,7 +80,12 @@ def main():
     system_prompt = load_system_prompt()
     tool_registry = _build_tool_registry(todo_list)
 
-    adapter = DeepSeekAdapter(api_key=api_key, model=args.model)
+    adapter = DeepSeekAdapter(
+        api_key=api_key,
+        model=args.model,
+        thinking=args.thinking,
+        reasoning_effort=args.reasoning_effort,
+    )
     orchestrator = Orchestrator(
         adapter=adapter,
         system_prompt=system_prompt,

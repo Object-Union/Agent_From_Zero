@@ -25,6 +25,18 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--max-tool-calls", type=int, default=10, help="Max tool calls per turn"
     )
+    parser.add_argument(
+        "--thinking",
+        type=lambda x: x.lower() != "off",
+        default=True,
+        help="Enable thinking mode (default: on). Use --thinking off to disable.",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        default="high",
+        choices=["high", "max"],
+        help="Reasoning effort for thinking mode (default: high)",
+    )
     return parser.parse_args(argv)
 
 

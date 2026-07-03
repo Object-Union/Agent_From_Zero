@@ -65,7 +65,7 @@ class TestTraceOutput:
     """Behavior 2-3: Trace is written to stderr and .jsonl file."""
 
     def test_emit_to_stderr(self, capsys):
-        """emit_trace() writes compact JSON to stderr."""
+        """emit_trace() writes a human-readable line to stderr."""
         from agent_from_zero.observability import TraceRecord, emit_trace
 
         tr = TraceRecord(
@@ -79,9 +79,8 @@ class TestTraceOutput:
 
         captured = capsys.readouterr()
         assert captured.err != ""
-        json_text = captured.err.strip().replace("[TRACE] ", "", 1)
-        data = json.loads(json_text)
-        assert data["tool_name"] == "calculator"
+        assert "calculator" in captured.err
+        assert "1+1" in captured.err
 
     def test_append_to_jsonl(self):
         """append_trace_to_file() appends a line to the .jsonl file."""

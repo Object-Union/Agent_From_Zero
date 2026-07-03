@@ -1,14 +1,14 @@
 """Context management: overflow detection, split for compression, summary application."""
 
 
-def _message_size(messages: list[dict]) -> int:
+def context_size(messages: list[dict]) -> int:
     """Total character count of serialized messages."""
     return sum(len(str(m)) for m in messages)
 
 
 def check_overflow(messages: list[dict], max_size: int) -> bool:
     """Return True if total message size meets or exceeds max_size."""
-    return _message_size(messages) >= max_size
+    return context_size(messages) >= max_size
 
 
 def split_for_compression(
